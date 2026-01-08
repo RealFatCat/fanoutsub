@@ -1,3 +1,5 @@
+// A simple Go package that implements a fanout pattern for channels.
+// It allows distributing messages from one source channel to multiple subscriber channels concurrently.
 package fanoutsub
 
 import (
@@ -18,7 +20,7 @@ type Fanout[T any] struct {
 	isRunning bool
 }
 
-// New creates new Fanout[T].
+// New creates a new Fanout instance with the given source channel.
 func New[T any](srcCh <-chan T) *Fanout[T] {
 	return &Fanout[T]{
 		srcCh: srcCh,
@@ -26,7 +28,7 @@ func New[T any](srcCh <-chan T) *Fanout[T] {
 	}
 }
 
-// Subscribe channel to fanout.
+// Subscribe adds a subscriber channel to the fanout. Returns an error if the fanout is already running.
 func (f *Fanout[T]) Subscribe(dstCh chan<- T) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -39,7 +41,7 @@ func (f *Fanout[T]) Subscribe(dstCh chan<- T) error {
 	return nil
 }
 
-// Unsubscribe channel from fanout.
+// Unsubscribe removes a subscriber channel from the fanout. Returns an error if the fanout is running.
 func (f *Fanout[T]) Unsubscribe(dstCh chan<- T) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -52,8 +54,9 @@ func (f *Fanout[T]) Unsubscribe(dstCh chan<- T) error {
 	return nil
 }
 
-// Start runs fanout. Each message is sent to subscribers in separate goroutines to avoid blocking.
-// When context is done, all subs are cleaned.
+// Start runs the fanout. Each message is sent to subscribers in a separate goroutine.
+// Blocks until the context is cancelled or the source channel closes, then cleans up subscribers.
+// Deadlocks are possible, as we wait for all subscribers to read data.
 func (f *Fanout[T]) Start(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
