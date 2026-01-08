@@ -8,12 +8,13 @@ import (
 
 var ErrSubOnRunning = errors.New("subscribing on running fanout is not allowed")
 var ErrAlreadyRunning = errors.New("starting already running fanout")
+var ErrUnsubOnRunning = errors.New("unsubscribing on running fanout is not allowed")
 
 type Fanout[T any] struct {
 	mu sync.Mutex
 
 	srcCh     <-chan T
-	subs      []chan<- T
+	subs      map[chan<- T]struct{}
 	isRunning bool
 }
 
@@ -21,6 +22,7 @@ type Fanout[T any] struct {
 func New[T any](srcCh <-chan T) *Fanout[T] {
 	return &Fanout[T]{
 		srcCh: srcCh,
+		subs:  make(map[chan<- T]struct{}),
 	}
 }
 
@@ -33,11 +35,24 @@ func (f *Fanout[T]) Subscribe(dstCh chan<- T) error {
 		return ErrSubOnRunning
 	}
 
-	f.subs = append(f.subs, dstCh)
+	f.subs[dstCh] = struct{}{}
 	return nil
 }
 
-// Start runs fanout. Deadlocks are possible if one of the subs is not reading.
+// Unsubscribe channel from fanout.
+func (f *Fanout[T]) Unsubscribe(dstCh chan<- T) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.isRunning {
+		return ErrUnsubOnRunning
+	}
+
+	delete(f.subs, dstCh)
+	return nil
+}
+
+// Start runs fanout. Each message is sent to subscribers in separate goroutines to avoid blocking.
 // When context is done, all subs are cleaned.
 func (f *Fanout[T]) Start(ctx context.Context) error {
 	f.mu.Lock()
@@ -52,10 +67,11 @@ func (f *Fanout[T]) Start(ctx context.Context) error {
 		defer func() {
 			f.mu.Lock()
 			f.isRunning = false
-			f.subs = nil
+			clear(f.subs)
 			f.mu.Unlock()
 		}()
 
+		var wg sync.WaitGroup
 		for {
 			select {
 			case <-ctx.Done():
@@ -64,9 +80,12 @@ func (f *Fanout[T]) Start(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				for i := range f.subs {
-					f.subs[i] <- data
+				for dstCh := range f.subs {
+					wg.Go(func() {
+						dstCh <- data
+					})
 				}
+				wg.Wait()
 			}
 		}
 	}()
